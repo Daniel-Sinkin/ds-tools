@@ -111,6 +111,24 @@ assert_zero_commit_repo() {
     fi
 }
 
+remote_has_refs() {
+    local url="$1"
+    local refs
+
+    if ! refs="$(git ls-remote "${url}")"; then
+        die "could not inspect ${url}; refusing to clone"
+    fi
+
+    [[ -n "${refs}" ]]
+}
+
+assert_zero_commit_remote() {
+    local url="$1"
+    if remote_has_refs "${url}"; then
+        die "${url} already has commits; refusing to clone before applying a starter template"
+    fi
+}
+
 clone_target_repo() {
     local url="$1"
     local name
@@ -209,6 +227,7 @@ git_root="$(current_git_root)"
 
 if [[ -n "${clone_url}" ]]; then
     [[ -z "${git_root}" ]] || die "--clone must be run from outside an existing git repo"
+    assert_zero_commit_remote "${clone_url}"
 else
     [[ -n "${git_root}" ]] || die "not inside a git repo; use --clone <repo-url> from the parent folder"
     assert_zero_commit_repo "${git_root}"
