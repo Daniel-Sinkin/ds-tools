@@ -1,6 +1,7 @@
 #include "clang-tidy/ClangTidyCheck.h"
 #include "clang-tidy/ClangTidyModule.h"
 
+#include "clang/Analysis/Analyses/ExprMutationAnalyzer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
@@ -21,6 +22,19 @@ namespace {
             return true;
     }
     return false;
+}
+
+[[nodiscard]] auto is_mutated_in_function(
+    const VarDecl &var, const FunctionDecl *function, ASTContext &context) -> bool {
+    if (function == nullptr)
+        return true;
+
+    const auto *body = function->getBody();
+    if (body == nullptr)
+        return true;
+
+    ExprMutationAnalyzer analyzer{*body, context};
+    return analyzer.isMutated(&var);
 }
 
 [[nodiscard]] auto is_user_source(const SourceManager &source_manager, SourceLocation location)
@@ -142,10 +156,16 @@ private:
             return;
 
         const auto has_mut = has_annotation(var, "mut");
+        const auto has_mut_unchecked = has_annotation(var, "mut_unchecked");
+        const auto has_mut_marker = has_mut or has_mut_unchecked;
         const auto has_cpy = has_annotation(var, "cpy");
         const auto is_const = is_const_binding(var.getType());
 
-        if (has_mut and is_const) {
+        if (has_mut and has_mut_unchecked) {
+            diag(var.getLocation(), "use either mut or mut_unchecked, not both");
+        }
+
+        if (has_mut_marker and is_const) {
             diag(var.getLocation(), "mutable marker on const local variable is contradictory");
         }
 
@@ -156,8 +176,15 @@ private:
                 "receive a by-value copy");
         }
 
-        if ((not is_const) and (not has_mut)) {
+        if ((not is_const) and (not has_mut_marker)) {
             diag(var.getLocation(), "local variable must be const or mut");
+        }
+
+        if (has_mut and (not has_mut_unchecked) and (not is_const) and
+            (not is_mutated_in_function(var, function, context))) {
+            diag(
+                var.getLocation(),
+                "mut local variable is never mutated; make it const or use mut_unchecked");
         }
 
         if (was_written_with_auto(var) and is_by_value(var.getType()) and (not is_cheap_copy(var.getType(), context)) and initializes_from_lvalue(var)) {
@@ -179,10 +206,16 @@ private:
             return;
 
         const auto has_mut = has_annotation(param, "mut");
+        const auto has_mut_unchecked = has_annotation(param, "mut_unchecked");
+        const auto has_mut_marker = has_mut or has_mut_unchecked;
         const auto has_cpy = has_annotation(param, "cpy");
         const auto type = param.getType();
 
-        if (has_mut and not is_mutable_borrow(type)) {
+        if (has_mut and has_mut_unchecked) {
+            diag(param.getLocation(), "use either mut or mut_unchecked, not both");
+        }
+
+        if (has_mut_marker and not is_mutable_borrow(type)) {
             diag(
                 param.getLocation(),
                 "mut parameter marker is only valid for mutable references or mutable pointers");
@@ -192,7 +225,7 @@ private:
             diag(param.getLocation(), "cpy parameter marker is only valid for by-value parameters");
         }
 
-        if (is_mutable_borrow(type) and not has_mut) {
+        if (is_mutable_borrow(type) and not has_mut_marker) {
             diag(param.getLocation(), "mutable reference or pointer parameter must be marked mut");
         }
 
